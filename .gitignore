@@ -1,0 +1,22 @@
+# Virtual env
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Models/data (pas aan naar wens)
+models/
+*.pt
+*.bin
+*.ckpt
+data/raw/
+
+# OS/IDE
+.DS_Store
+.vscode/
+.idea/
