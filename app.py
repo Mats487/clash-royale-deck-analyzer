@@ -1,25 +1,45 @@
+from datetime import datetime
+from pathlib import Path
 import streamlit as st
-from heuristics import evaluate_deck
+from heuristics import evaluate_deck, suggest_improvements
 from card_db import CARD_DB
 
-st.set_page_config(page_title="Clash Royale Deck Analyzer", page_icon="🛡️", layout="centered")
+# ---------- Session state ----------
+if "analysis" not in st.session_state:
+    st.session_state["analysis"] = None
+if "deck_names" not in st.session_state:
+    st.session_state["deck_names"] = []
+
+# ---------- UI ----------
+st.set_page_config(page_title="Clash Royale Deck Analyzer",
+                   page_icon="🛡️", layout="centered")
 st.title("Clash Royale Deck Analyzer")
 
 st.subheader("1) Kies je 8 kaarten")
 all_cards = sorted(CARD_DB.keys())
+default_deck = ["Hog Rider", "Fireball", "Zap", "The Log",
+                "Musketeer", "Cannon", "Skeletons", "Ice Spirit"]
 
-default_deck = ["Hog Rider","Fireball","Zap","The Log","Musketeer","Cannon","Skeletons","Ice Spirit"]
-selected = st.multiselect("Deck (exact 8 kaarten)", all_cards, default=default_deck, max_selections=8)
+selected = st.multiselect("Deck (exact 8 **unieke** kaarten)",
+                          all_cards, default=default_deck, max_selections=8)
+dup = len(selected) != len(set(selected))
+if dup:
+    st.error("Dubbele kaarten gedetecteerd.")
 if len(selected) != 8:
-    st.warning(f"Je hebt {len(selected)} kaarten geselecteerd — selecteer er precies 8.")
-    st.stop()
+    st.warning(
+        f"Je hebt {len(selected)} kaarten geselecteerd — selecteer er precies 8.")
 
 st.subheader("2) Analyseer")
-if st.button("Analyze deck"):
-    result = evaluate_deck(selected)
-    deck = result["deck"]
-    avg  = result["avg_elixir"]
-    m    = result["metrics"]
+if st.button("Analyze deck", disabled=dup or len(selected) != 8, key="analyze_btn"):
+    st.session_state["analysis"] = evaluate_deck(selected)
+    st.session_state["deck_names"] = selected
+
+# ---------- Resultaat tonen op basis van state ----------
+res = st.session_state["analysis"]
+if res:
+    deck = res["deck"]
+    avg = res["avg_elixir"]
+    m = res["metrics"]
 
     st.write("**Gemiddelde elixir:**", avg)
     col1, col2, col3 = st.columns(3)
@@ -35,72 +55,76 @@ if st.button("Analyze deck"):
     with st.expander("Deck details"):
         st.write([c["name"] for c in deck])
 
-    st.markdown("---")
-    st.subheader("3) (Optioneel) AI-advies")
-    enable_llm = st.toggle("LLM-advies inschakelen (download model bij eerste keer)")
-    if enable_llm:
-        try:
-            from transformers import pipeline
-            @st.cache_resource
-            def get_generator():
-                # Klein, lokaal model; kan je later vervangen door bv. flan-t5-base
-                return pipeline("text-generation", model="distilgpt2")
-            gen = get_generator()
+    # ---------- AI-advies ----------
+    with st.expander("AI-advies", expanded=True):
+        use_llm = st.toggle("AI-advies (LLM) inschakelen",
+                            value=True, key="llm_on")
 
-            prompt = (
-                "You are a Clash Royale coach. Give concise, actionable tips.\n"
-                f"Deck: {', '.join([c['name'] for c in deck])}\n"
-                f"Metrics (0-1): overall={m['overall']:.2f}, balance={m['balance']:.2f}, "
-                f"coverage={m['coverage']:.2f}, spells={m['spells']:.2f}, wincon={m['wincon']:.2f}, synergy={m['synergy']:.2f}.\n"
-                "Return 4 bullet points with improvements (card swaps or playstyle)."
-            )
-            out = gen(prompt, max_new_tokens=120, do_sample=True, temperature=0.8)[0]["generated_text"]
-            st.write(out.split("Return")[0].strip())  # simpele trim
-        except Exception:
-            st.info("LLM niet beschikbaar. Fallback naar rule-based advies.")
-            tips = []
-            if m["wincon"] < 0.5: tips.append("Voeg minstens 1 duidelijke win condition toe (bv. Hog Rider, Giant of Balloon).")
-            if m["coverage"] < 0.75: tips.append("Zorg voor anti-air, splash, building en tank-killer in het deck.")
-            if avg > 4.5: tips.append("Gemiddelde elixir is hoog: vervang 1–2 dure kaarten door cycle/goedkope support.")
-            if m["spells"] < 0.67: tips.append("Gebruik een mix van small + medium/big spell voor betere spell-coverage.")
-            if m["synergy"] < 0.5: tips.append("Koppel je wincon aan support (bv. building voor verdediging + small spell).")
-            st.write("\n".join([f"- {t}" for t in tips]) or "- Deck ziet er coherent uit; focus op micro-play.")
+        advice_lines = []
+        if use_llm:
+            try:
+                from transformers import pipeline
 
+                @st.cache_resource
+                def get_llm():
+                    # Tekst-naar-tekst; goed voor korte instructieve tips
+                    return pipeline("text2text-generation", model="google/flan-t5-small")
 
-# Benchmarks
-import pandas as pd
+                gen = get_llm()
+                EXAMPLE = (
+                    "- Voeg anti-air toe (Musketeer/Firecracker).\n"
+                    "- Verlaag elixir met cycle-kaarten.\n"
+                    "- Koppel wincon aan small spell.\n"
+                    "- Neem defensieve building op."
+                )
+                prompt = f"""Maak 4 korte, concrete bullets met advies voor een Clash Royale deck.
+Deck: {', '.join([c['name'] for c in deck])}
+Metrics (0-1): overall={m['overall']:.2f}, balance={m['balance']:.2f}, coverage={m['coverage']:.2f}, spells={m['spells']:.2f}, wincon={m['wincon']:.2f}, synergy={m['synergy']:.2f}.
+Schrijf in het Nederlands.
+Uitvoerregels:
+- Alleen bullets die starten met "- ".
+- Max 10 woorden per bullet.
 
-st.divider()
-st.subheader("Benchmarks")
+Voorbeeld:
+{EXAMPLE}
 
-SAMPLE_DECKS = {
-    "Hog 2.6": [
-        "Hog Rider","Musketeer","Cannon","Fireball","The Log","Ice Spirit","Skeletons","Zap"
-    ],
-    "Giant Beatdown": [
-        "Giant","Baby Dragon","Mega Minion","Lightning","Zap","Minions","Valkyrie","Inferno Tower"
-    ],
-    "LavaLoon": [
-        "Lava Hound","Balloon","Baby Dragon","Mega Minion","Tombstone","Arrows","Fireball","Skeletons"
-    ],
-    "X-Bow Cycle": [
-        "X-Bow","Tesla","Archers","Fireball","The Log","Ice Spirit","Skeletons","Knight"
-    ],
-}
+Antwoord:
+"""
+                out = gen(
+                    prompt,
+                    max_new_tokens=96,
+                    num_beams=4,
+                    do_sample=False,
+                    no_repeat_ngram_size=3
+                )[0]["generated_text"]
 
-if st.button("Run benchmarks"):
-    rows = []
-    for name, deck in SAMPLE_DECKS.items():
-        res = evaluate_deck(deck); m = res["metrics"]
-        rows.append({
-            "Deck": name,
-            "AvgElixir": res["avg_elixir"],
-            "Overall": round(m["overall"],3),
-            "Balance": round(m["balance"],3),
-            "Coverage": round(m["coverage"],3),
-            "Spells": round(m["spells"],3),
-            "Wincon": round(m["wincon"],3),
-            "Synergy": round(m["synergy"],3),
-        })
-    st.dataframe(pd.DataFrame(rows), use_container_width=True)
-    st.info("Maak een screenshot en voeg die toe aan README en rapport.")
+                lines = [l.strip() for l in out.splitlines()
+                         if l.strip().startswith("- ")]
+                advice_lines = lines[:4]
+                if len(advice_lines) < 3:
+                    advice_lines = [
+                        f"- {t}" for t in suggest_improvements(deck, m, avg)]
+            except Exception:
+                st.info("LLM niet beschikbaar — toon rule-based tips.")
+                advice_lines = [
+                    f"- {t}" for t in suggest_improvements(deck, m, avg)]
+        else:
+            advice_lines = [
+                f"- {t}" for t in suggest_improvements(deck, m, avg)]
+
+        st.write("\n".join(advice_lines) or "- Geen extra tips nodig.")
+        st.caption(f"Adviesbron: **{'LLM (google/flan-t5-small)' if use_llm else 'Heuristiek'}**")
+
+        # Bewaar advies
+        if st.button("Bewaar AI-advies (.md)", key="save_advice"):
+            Path("docs").mkdir(exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            with open(f"docs/ai_advice_{ts}.md", "w", encoding="utf-8") as f:
+                f.write("# AI-advies\n")
+                f.write(f"Deck: {', '.join([c['name'] for c in deck])}\n\n")
+                f.write("## Tips\n")
+                for t in advice_lines:
+                    f.write(f"{t}\n")
+            st.success("Opgeslagen in docs/")
+else:
+    st.info("Selecteer en analyseer eerst 8 **unieke** kaarten.")

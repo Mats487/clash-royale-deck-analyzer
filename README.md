@@ -1,3 +1,23 @@
+# Clash Royale Deck Analyzer
+Evaluatie van 8-kaart decks met **heuristische metrics** + **lokaal LLM-advies**.
+
+## Snel starten
+```bash
+python -m venv .venv && .venv\Scripts\Activate.ps1  # Windows
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+## Wat je ziet
+- Metrics: average elixir, balance, coverage, spells, wincon, synergy → overall.
+- AI-advies: lokaal model (FLAN-T5 small) genereert korte tips; bij fout: heuristiek-fallback.
+
+## Screenshots
+![Metrics](docs/screenshot_metrics.png)
+
+![AI-advies](docs/screenshot_advice.png)
+
+
 ## Benchmarks
 **Volledige tabel (CSV):** [data/benchmarks.csv](data/benchmarks.csv).
 
